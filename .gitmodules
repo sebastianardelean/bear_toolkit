@@ -1,0 +1,3 @@
+[submodule "bprocmemmtool/lib/bprocmemm"]
+	path = bprocmemmtool/lib/bprocmemm
+	url = https://github.com/sebastianardelean/bprocmemm

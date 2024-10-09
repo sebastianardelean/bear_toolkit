@@ -110,7 +110,7 @@ pub mod cli {
         match &args.command {
             Commands::Print => {
                 mem_regions.iter().enumerate().for_each(|(index, mem)| {
-                    println!("Memory region {}: {:#?}", index, mem.show_memory_regions())
+                    println!("Memory region {}: {:#?}", index, mem.show())
                 });
             }
 

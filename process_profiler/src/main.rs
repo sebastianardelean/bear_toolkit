@@ -18,17 +18,50 @@ or
 cat /proc/18756/smaps | grep -i pss |  awk '{Total+=$2} END {print Total/1024/1024" GB"}
  */
 
+use clap::{Args, Parser, Subcommand};
 use core::panic;
 use std::{fs, io::Error, io::ErrorKind};
 
+#[derive(Parser)]
+#[command(version,about,long_about = None)]
+#[command(propagate_version = true)]
+struct Cli {
+    pid: i32,
+
+    #[command(subcommand)]
+    unit: Units,
+}
+
+#[derive(Subcommand)]
+enum Units {
+    /// Print in KB
+    K,
+    /// Print in MB
+    M,
+    /// Print in GB
+    G,
+}
+
 fn main() -> std::io::Result<()> {
-    let pid = 18756;
-    let mem_used = extract_pss_memory_kb(pid);
+    let args = Cli::parse();
+    let process_pid = args.pid;
+
+    let mem_used = extract_pss_memory_kb(process_pid);
+
     match mem_used {
-        Ok(val) => {
-            let total_pss_gb = val as f64 / 1024.0 / 1024.0;
-            println!("Total Pss: {:.6} GB", total_pss_gb);
-        }
+        Ok(val) => match &args.unit {
+            Units::K => {
+                println!("Total Pss: {} KB", val);
+            }
+            Units::M => {
+                let total_pss_mb = val as f64 / 1024.0;
+                println!("Total Pss: {:.6} MB", total_pss_mb);
+            }
+            Units::G => {
+                let total_pss_gb = val as f64 / 1024.0 / 1024.0;
+                println!("Total Pss: {:.6} GB", total_pss_gb);
+            }
+        },
         Err(e) => panic!("Error: {}", e),
     }
 

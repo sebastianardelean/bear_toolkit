@@ -8,64 +8,108 @@ Uss: This is the amount of memory that is committed to physical memory and is un
 
 Pss: This splits the accounting of shared pages that are committed to physical memory between all the processes that have them mapped. For example, if an area of library code is 12 pages long and is shared by six processes, each will accumulate two pages in Pss. Thus, if you add the Pss numbers for all processes, you will get the actual amount of memory being used by those processes. In other words,Pss is the number we have been looking for.
 
-I'm probably interested in RSS.
-So, if I cat /proc/[PID]/statm, the second value is rss (index from 1) and to convert the value to KB I have to multiply with page size
-
-or VmRSS from /proc/[PID]/status
-
-or
-
 cat /proc/18756/smaps | grep -i pss |  awk '{Total+=$2} END {print Total/1024/1024" GB"}
+
+TODO:
+1. Until signal is caught, every x ms
  */
 
 use clap::{Args, Parser, Subcommand};
 use core::panic;
-use std::{fs, io::Error, io::ErrorKind};
+use std::{fs, io::Error, io::ErrorKind, thread, time};
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[command(version,about,long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
     pid: i32,
 
-    #[command(subcommand)]
-    unit: Units,
-}
+    /// Print value in KB
+    #[arg(short, long)]
+    kb: bool,
 
-#[derive(Subcommand)]
-enum Units {
-    /// Print in KB
-    K,
-    /// Print in MB
-    M,
-    /// Print in GB
-    G,
+    /// Print value in MB
+    #[arg(short, long)]
+    mb: bool,
+
+    /// Print value in GB
+    #[arg(short, long)]
+    gb: bool,
+
+    /// Get a specific number of samples.
+    #[arg(short, long, default_value_t = 1)]
+    samples: usize,
+
+    /// Read every specified number of ms.
+    #[arg(short, long, default_value_t = 10)]
+    interval: u64,
 }
 
 fn main() -> std::io::Result<()> {
     let args = Cli::parse();
     let process_pid = args.pid;
 
-    let mem_used = extract_pss_memory_kb(process_pid);
+    if args.samples == 1 {
+        let mem_used = extract_pss_memory_kb(process_pid);
+        match mem_used {
+            Ok(val) => pretty_print(val as f64, args),
+            Err(e) => panic!("Error: {}", e),
+        }
+    } else {
+        let mut samples: Vec<u64> = Vec::new();
+        let time_sleep = time::Duration::from_millis(args.interval);
+        let mut count = 0;
+        while count < args.samples {
+            let sample = extract_pss_memory_kb(process_pid);
+            match sample {
+                Ok(val) => {
+                    samples.push(val);
+                    let now = time::Instant::now();
+                    thread::sleep(time_sleep);
+                    assert!(now.elapsed() >= time_sleep);
+                }
+                Err(e) => panic!("Error: {}", e),
+            }
+            count += 1;
+        }
+        let max = *samples.iter().max().unwrap_or(&0);
 
-    match mem_used {
-        Ok(val) => match &args.unit {
-            Units::K => {
-                println!("Total Pss: {} KB", val);
-            }
-            Units::M => {
-                let total_pss_mb = val as f64 / 1024.0;
-                println!("Total Pss: {:.6} MB", total_pss_mb);
-            }
-            Units::G => {
-                let total_pss_gb = val as f64 / 1024.0 / 1024.0;
-                println!("Total Pss: {:.6} GB", total_pss_gb);
-            }
-        },
-        Err(e) => panic!("Error: {}", e),
+        let min = *samples.iter().min().unwrap_or(&0);
+
+        let sum: u64 = samples.iter().sum();
+        let average = if !samples.is_empty() {
+            sum as f64 / samples.len() as f64
+        } else {
+            0.0
+        };
+
+        print!("Max: ");
+        pretty_print(max as f64, args.clone());
+        print!("Min: ");
+        pretty_print(min as f64, args.clone());
+        print!("Average: ");
+        pretty_print(average as f64, args.clone());
     }
 
     Ok(())
+}
+
+fn pretty_print(value: f64, args: Cli) {
+    if args.kb {
+        println!("Total Pss: {:.6} KB", value);
+    } else {
+        if args.mb {
+            let total_pss_mb = value / 1024.0;
+            println!("Total Pss: {:.6} MB", total_pss_mb);
+        } else {
+            if args.gb {
+                let total_pss_gb = value / 1024.0 / 1024.0;
+                println!("Total Pss: {:.6} GB", total_pss_gb);
+            } else {
+                println!("Total Pss: {:.6} KB", value);
+            }
+        }
+    }
 }
 
 fn extract_pss_memory_kb(pid: i32) -> Result<u64, std::io::Error> {

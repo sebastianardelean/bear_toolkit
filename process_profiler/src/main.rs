@@ -11,12 +11,15 @@ Pss: This splits the accounting of shared pages that are committed to physical m
 cat /proc/18756/smaps | grep -i pss |  awk '{Total+=$2} END {print Total/1024/1024" GB"}
 
 TODO:
-1. Until signal is caught, every x ms
+1. Create a function to calculate the min/max/avg and call pretty_print
  */
 
 use clap::{Args, Parser, Subcommand};
 use core::panic;
-use std::{fs, io::Error, io::ErrorKind, thread, time};
+use signal_hook::{consts::SIGINT, iterator::Signals};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::{fs, io::Error, io::ErrorKind, thread, time, time::Duration};
 
 #[derive(Parser, Clone)]
 #[command(version,about,long_about = None)]
@@ -43,23 +46,32 @@ struct Cli {
     /// Read every specified number of ms.
     #[arg(short, long, default_value_t = 10)]
     interval: u64,
+
+    /// Sample continuously
+    #[arg(short, long)]
+    continuous: bool,
 }
 
 fn main() -> std::io::Result<()> {
     let args = Cli::parse();
     let process_pid = args.pid;
 
-    if args.samples == 1 {
-        let mem_used = extract_pss_memory_kb(process_pid);
-        match mem_used {
-            Ok(val) => pretty_print(val as f64, args),
-            Err(e) => panic!("Error: {}", e),
-        }
-    } else {
+    if args.continuous {
+        let running = Arc::new(AtomicBool::new(true));
+        let running_clone = Arc::clone(&running);
+
+        let mut samples: Vec<u64> = Vec::new();
         let mut samples: Vec<u64> = Vec::new();
         let time_sleep = time::Duration::from_millis(args.interval);
-        let mut count = 0;
-        while count < args.samples {
+
+        let mut signals = Signals::new(&[SIGINT]).expect("Failed to create signal handler");
+
+        thread::spawn(move || {
+            for _ in signals.forever() {
+                running_clone.store(false, Ordering::SeqCst);
+            }
+        });
+        while running.load(Ordering::SeqCst) {
             let sample = extract_pss_memory_kb(process_pid);
             match sample {
                 Ok(val) => {
@@ -70,7 +82,6 @@ fn main() -> std::io::Result<()> {
                 }
                 Err(e) => panic!("Error: {}", e),
             }
-            count += 1;
         }
         let max = *samples.iter().max().unwrap_or(&0);
 
@@ -89,8 +100,49 @@ fn main() -> std::io::Result<()> {
         pretty_print(min as f64, args.clone());
         print!("Average: ");
         pretty_print(average as f64, args.clone());
-    }
+    } else {
+        if args.samples == 1 {
+            let mem_used = extract_pss_memory_kb(process_pid);
+            match mem_used {
+                Ok(val) => pretty_print(val as f64, args),
+                Err(e) => panic!("Error: {}", e),
+            }
+        } else {
+            let mut samples: Vec<u64> = Vec::new();
+            let time_sleep = time::Duration::from_millis(args.interval);
+            let mut count = 0;
+            while count < args.samples {
+                let sample = extract_pss_memory_kb(process_pid);
+                match sample {
+                    Ok(val) => {
+                        samples.push(val);
+                        let now = time::Instant::now();
+                        thread::sleep(time_sleep);
+                        assert!(now.elapsed() >= time_sleep);
+                    }
+                    Err(e) => panic!("Error: {}", e),
+                }
+                count += 1;
+            }
+            let max = *samples.iter().max().unwrap_or(&0);
 
+            let min = *samples.iter().min().unwrap_or(&0);
+
+            let sum: u64 = samples.iter().sum();
+            let average = if !samples.is_empty() {
+                sum as f64 / samples.len() as f64
+            } else {
+                0.0
+            };
+
+            print!("Max: ");
+            pretty_print(max as f64, args.clone());
+            print!("Min: ");
+            pretty_print(min as f64, args.clone());
+            print!("Average: ");
+            pretty_print(average as f64, args.clone());
+        }
+    }
     Ok(())
 }
 
